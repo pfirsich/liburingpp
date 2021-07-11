@@ -42,24 +42,72 @@ void writeBarrier()
 }
 }
 
+IoURing::CQEHandle::CQEHandle(const IoURing* ring, uint64_t userData, int32_t res)
+    : ring(ring)
+    , userData(userData)
+    , res(res)
+{
+}
+
+IoURing::CQEHandle::CQEHandle(CQEHandle&& other)
+    : ring(other.ring)
+    , userData(other.userData)
+    , res(other.res)
+{
+    other.release();
+}
+
+IoURing::CQEHandle& IoURing::CQEHandle::operator=(CQEHandle&& other)
+{
+    finish();
+    ring = other.ring;
+    userData = other.userData;
+    res = other.res;
+    other.release();
+    return *this;
+}
+
+void IoURing::CQEHandle::finish()
+{
+    if (ring) {
+        ring->advanceCq();
+    }
+    release();
+}
+
+void IoURing::CQEHandle::release()
+{
+    ring = nullptr;
+}
+
+IoURing::CQEHandle::~CQEHandle()
+{
+    finish();
+}
+
 void IoURing::cleanup()
 {
     if (sqrPtr_) {
         ::munmap(sqrPtr_, sqrSize_);
-        sqrPtr_ = nullptr;
     }
     if (cqrPtr_ && sqrPtr_ != cqrPtr_) {
         ::munmap(cqrPtr_, cqrSize_);
-        cqrPtr_ = nullptr;
     }
     if (sqes_) {
         ::munmap(sqes_, sqEntries_ * sizeof(io_uring_sqe));
-        sqes_ = nullptr;
     }
     if (ringFd_ != -1) {
         ::close(ringFd_);
-        ringFd_ = -1;
     }
+    release();
+}
+
+void IoURing::release()
+{
+    sqrPtr_ = nullptr;
+    cqrPtr_ = nullptr;
+    sqes_ = nullptr;
+    ringFd_ = -1;
 }
 
 IoURing::~IoURing()
@@ -146,6 +194,15 @@ io_uring_cqe* IoURing::peekCqe(unsigned* numAvailable) const
     return nullptr;
 }
 
+std::optional<IoURing::CQEHandle> IoURing::peekCqeHandle(unsigned* numAvailable) const
+{
+    auto cqe = peekCqe(numAvailable);
+    if (!cqe) {
+        return std::nullopt;
+    }
+    return CQEHandle(this, cqe->user_data, cqe->res);
+}
+
 io_uring_cqe* IoURing::waitCqe(size_t num) const
 {
     assert(ringFd_ != -1);
@@ -162,6 +219,15 @@ io_uring_cqe* IoURing::waitCqe(size_t num) const
     cqe = peekCqe();
     assert(cqe);
     return cqe;
+}
+
+std::optional<IoURing::CQEHandle> IoURing::waitCqeHandle(size_t num) const
+{
+    auto cqe = waitCqe(num);
+    if (!cqe) {
+        return std::nullopt;
+    }
+    return CQEHandle(this, cqe->user_data, cqe->res);
 }
 
 void IoURing::advanceCq(size_t num) const

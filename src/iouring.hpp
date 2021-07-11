@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include <linux/io_uring.h>
 #include <sys/uio.h>
@@ -18,52 +19,22 @@
 class IoURing {
 public:
     struct CQEHandle {
-        IoURing* ring = nullptr;
-        io_uring_cqe* cqe = nullptr;
+        const IoURing* ring = nullptr;
+        uint64_t userData;
+        int32_t res;
 
-        CQEHandle(IoURing* ring, io_uring_cqe* cqe)
-            : ring(ring)
-            , cqe(cqe)
-        {
-        }
+        CQEHandle(const IoURing* ring, uint64_t userData, int32_t res);
 
         CQEHandle(const CQEHandle&) = delete;
         CQEHandle& operator=(const CQEHandle&) = delete;
 
-        CQEHandle(CQEHandle&& other)
-            : ring(other.ring)
-            , cqe(other.cqe)
-        {
-            other.release();
-        }
+        CQEHandle(CQEHandle&& other);
+        CQEHandle& operator=(CQEHandle&& other);
 
-        CQEHandle& operator=(CQEHandle&& other)
-        {
-            reset();
-            ring = other.ring;
-            cqe = other.cqe;
-            other.release();
-            return *this;
-        }
+        ~CQEHandle();
 
-        void reset()
-        {
-            if (ring && cqe) {
-                ring->advanceCq();
-            }
-            release();
-        }
-
-        void release()
-        {
-            ring = nullptr;
-            cqe = nullptr;
-        }
-
-        ~CQEHandle()
-        {
-            reset();
-        }
+        void finish();
+        void release();
     };
 
     IoURing() = default;
@@ -74,10 +45,16 @@ public:
     IoURing(const IoURing&) = delete;
     IoURing& operator=(const IoURing&) = delete;
 
+    // TODO: Implement these two
+    IoURing(IoURing&&) = delete;
+    IoURing& operator=(IoURing&&) = delete;
+
     bool init(size_t sqEntries = 128);
 
     io_uring_cqe* peekCqe(unsigned* numAvailable = nullptr) const;
+    std::optional<CQEHandle> peekCqeHandle(unsigned* numAvailable = nullptr) const;
     io_uring_cqe* waitCqe(size_t num = 1) const;
+    std::optional<CQEHandle> waitCqeHandle(size_t num = 1) const;
     void advanceCq(size_t num = 1) const;
 
     io_uring_sqe* getSqe();
@@ -88,6 +65,7 @@ public:
 
 private:
     void cleanup();
+    void release();
 
     int ringFd_ = -1;
 

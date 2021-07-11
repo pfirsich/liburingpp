@@ -1,3 +1,4 @@
+#include <cassert>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -73,7 +74,10 @@ int main(int argc, char** argv)
     }
 
     for (const auto& file : files) {
-        const auto cqe = ring.peekCqe();
+        ::close(file.fd);
+
+        const auto cqe = ring.peekCqeHandle();
+        assert(cqe);
         if (cqe->res < 0) {
             std::cerr << "Error reading file '" << file.name << "': " << cqe->res << std::endl;
             return 1;
@@ -84,7 +88,5 @@ int main(int argc, char** argv)
                 static_cast<const char*>(file.iovecs[block].iov_base), file.iovecs[block].iov_len);
             std::free(file.iovecs[block].iov_base);
         }
-        ring.advanceCq();
-        ::close(file.fd);
     }
 }
