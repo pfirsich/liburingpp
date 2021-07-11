@@ -281,20 +281,185 @@ void IoURing::submitSqes(size_t num, size_t waitCqes)
     io_uring_enter(ringFd_, flushSqes(num), waitCqes, waitCqes > 0 ? IORING_ENTER_GETEVENTS : 0);
 }
 
-io_uring_sqe* IoURing::prepareReadv(int fd, const iovec* iov, int iovcnt, off_t offset)
+io_uring_sqe* IoURing::prepare(uint8_t opcode, int fd, uint64_t off, const void* addr, uint32_t len)
 {
-    const auto sqe = getSqe();
-    sqe->opcode = IORING_OP_READV;
+    auto sqe = getSqe();
+    sqe->opcode = opcode;
     sqe->flags = 0;
     sqe->ioprio = 0;
     sqe->fd = fd;
-
-    sqe->off = offset;
-    sqe->addr = reinterpret_cast<uint64_t>(iov);
-    sqe->len = iovcnt;
-
-    sqe->rw_flags = 0;
+    sqe->off = off;
+    sqe->addr = reinterpret_cast<uint64_t>(addr);
+    sqe->len = len;
+    sqe->rw_flags = 0; // Init some union field with 0
     sqe->user_data = 0;
     sqe->__pad2[0] = sqe->__pad2[1] = sqe->__pad2[2] = 0;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareNop()
+{
+    return prepare(IORING_OP_NOP, -1, 0, nullptr, 0);
+}
+
+io_uring_sqe* IoURing::prepareReadv(int fd, const iovec* iov, int iovcnt, off_t offset)
+{
+    return prepare(IORING_OP_READV, fd, offset, iov, iovcnt);
+}
+
+io_uring_sqe* IoURing::prepareWritev(int fd, const iovec* iov, int iovcnt, off_t offset)
+{
+    return prepare(IORING_OP_WRITEV, fd, offset, iov, iovcnt);
+}
+
+io_uring_sqe* IoURing::prepareFsync(int fd, uint32_t flags)
+{
+    auto sqe = prepare(IORING_OP_FSYNC, fd, 0, nullptr, 0);
+    sqe->fsync_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::preparePollAdd(int fd, unsigned pollMask)
+{
+    auto sqe = prepare(IORING_OP_POLL_ADD, fd, 0, nullptr, 0);
+    sqe->poll_events = pollMask;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::preparePollRemove(uint64_t userData)
+{
+    return prepare(IORING_OP_POLL_REMOVE, -1, 0, reinterpret_cast<void*>(userData), 0);
+}
+
+io_uring_sqe* IoURing::prepareSyncFileRange(
+    int fd, off64_t offset, off64_t nbytes, unsigned int flags)
+{
+    auto sqe = prepare(IORING_OP_SYNC_FILE_RANGE, fd, offset, nullptr, nbytes);
+    sqe->sync_range_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareSendmsg(int sockfd, const msghdr* msg, int flags)
+{
+    auto sqe = prepare(IORING_OP_SENDMSG, sockfd, 0, msg, 1);
+    sqe->msg_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareRecvmsg(int sockfd, const msghdr* msg, int flags)
+{
+    auto sqe = prepare(IORING_OP_RECVMSG, sockfd, 0, msg, 1);
+    sqe->msg_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareTimeout(struct __kernel_timespec* ts, uint64_t count, uint32_t flags)
+{
+    auto sqe = prepare(IORING_OP_TIMEOUT, -1, count, ts, 1);
+    sqe->timeout_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareTimeoutRemove(uint64_t userData, uint32_t flags)
+{
+    auto sqe = prepare(IORING_OP_TIMEOUT_REMOVE, -1, 0, reinterpret_cast<void*>(userData), 0);
+    sqe->timeout_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareAccept(
+    int sockfd, const sockaddr* addr, socklen_t* addrlen, uint32_t flags)
+{
+    auto sqe = prepare(IORING_OP_ACCEPT, sockfd, 0, addr, 0);
+    sqe->addr2 = reinterpret_cast<uint64_t>(addrlen);
+    sqe->accept_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareAsyncCancel(uint64_t userData)
+{
+    return prepare(IORING_OP_ASYNC_CANCEL, -1, 0, reinterpret_cast<void*>(userData), 0);
+}
+
+io_uring_sqe* IoURing::prepareConnect(int sockfd, const sockaddr* addr, socklen_t addrlen)
+{
+    return prepare(IORING_OP_CONNECT, sockfd, addrlen, addr, 0);
+}
+
+io_uring_sqe* IoURing::prepareOpenat(int dirfd, const char* pathname, int flags, mode_t mode)
+{
+    auto sqe = prepare(IORING_OP_OPENAT, dirfd, 0, pathname, mode);
+    sqe->open_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareClose(int fd)
+{
+    return prepare(IORING_OP_CLOSE, fd, 0, nullptr, 0);
+}
+
+io_uring_sqe* IoURing::prepareStatx(
+    int dirfd, const char* pathname, int flags, unsigned int mask, struct statx* statxbuf)
+{
+    auto sqe
+        = prepare(IORING_OP_STATX, dirfd, reinterpret_cast<uint64_t>(statxbuf), pathname, mask);
+    sqe->statx_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareRead(int fd, void* buf, size_t count, off_t offset)
+{
+    return prepare(IORING_OP_READ, fd, offset, buf, count);
+}
+
+io_uring_sqe* IoURing::prepareWrite(int fd, const void* buf, size_t count, off_t offset)
+{
+    return prepare(IORING_OP_WRITE, fd, offset, buf, count);
+}
+
+io_uring_sqe* IoURing::prepareSend(int sockfd, const void* buf, size_t len, int flags)
+{
+    auto sqe = prepare(IORING_OP_SEND, sockfd, 0, buf, len);
+    sqe->msg_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareRecv(int sockfd, void* buf, size_t len, int flags)
+{
+    auto sqe = prepare(IORING_OP_RECV, sockfd, 0, buf, len);
+    sqe->msg_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareOpenat2(int dirfd, const char* pathname, const open_how* how)
+{
+    return prepare(
+        IORING_OP_OPENAT2, dirfd, reinterpret_cast<uint64_t>(how), pathname, sizeof(open_how));
+}
+
+io_uring_sqe* IoURing::prepareEpollCtl(int epfd, int op, int fd, epoll_event* event)
+{
+    return prepare(IORING_OP_EPOLL_CTL, epfd, reinterpret_cast<uint64_t>(event),
+        reinterpret_cast<void*>(fd), op);
+}
+
+io_uring_sqe* IoURing::prepareShutdown(int fd, int how)
+{
+    return prepare(IORING_OP_SHUTDOWN, fd, 0, nullptr, how);
+}
+
+io_uring_sqe* IoURing::prepareRenameat(
+    int olddirfd, const char* oldpath, int newdirfd, const char* newpath, int flags)
+{
+    auto sqe = prepare(
+        IORING_OP_RENAMEAT, olddirfd, reinterpret_cast<uint64_t>(newpath), oldpath, newdirfd);
+    sqe->rename_flags = flags;
+    return sqe;
+}
+
+io_uring_sqe* IoURing::prepareUnlinkat(int dirfd, const char* pathname, int flags)
+{
+    auto sqe = prepare(IORING_OP_UNLINKAT, dirfd, 0, pathname, 0);
+    sqe->unlink_flags = flags;
     return sqe;
 }
