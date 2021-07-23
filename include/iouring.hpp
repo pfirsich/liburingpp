@@ -5,6 +5,7 @@
 
 #include <linux/io_uring.h>
 #include <linux/openat2.h>
+#include <linux/time_types.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -68,20 +69,20 @@ public:
     io_uring_sqe* prepareNop();
     io_uring_sqe* prepareReadv(int fd, const iovec* iov, int iovcnt, off_t offset = 0);
     io_uring_sqe* prepareWritev(int fd, const iovec* iov, int iovcnt, off_t offset = 0);
-    io_uring_sqe* prepareFsync(int fd, uint32_t flags);
+    io_uring_sqe* prepareFsync(int fd, uint32_t flags = 0);
     // io_uring_sqe* prepareReadFixed();
     // io_uring_sqe* prepareWriteFixed();
     io_uring_sqe* preparePollAdd(int fd, unsigned pollMask);
     io_uring_sqe* preparePollRemove(uint64_t userData);
-    io_uring_sqe* prepareSyncFileRange(int fd, off64_t offset, off64_t nbytes, unsigned int flags);
-    io_uring_sqe* prepareSendmsg(int sockfd, const msghdr* msg, int flags);
-    io_uring_sqe* prepareRecvmsg(int sockfd, const msghdr* msg, int flags);
-    io_uring_sqe* prepareTimeout(struct __kernel_timespec* ts, uint64_t count, uint32_t flags = 0);
+    io_uring_sqe* prepareSyncFileRange(
+        int fd, off64_t offset, off64_t nbytes, unsigned int flags = 0);
+    io_uring_sqe* prepareSendmsg(int sockfd, const msghdr* msg, int flags = 0);
+    io_uring_sqe* prepareRecvmsg(int sockfd, const msghdr* msg, int flags = 0);
+    io_uring_sqe* prepareTimeout(__kernel_timespec* ts, uint64_t count, uint32_t flags = 0);
     io_uring_sqe* prepareTimeoutRemove(uint64_t userData, uint32_t flags);
-    io_uring_sqe* prepareAccept(
-        int sockfd, const sockaddr* addr, socklen_t* addrlen, uint32_t flags);
+    io_uring_sqe* prepareAccept(int sockfd, sockaddr* addr, socklen_t* addrlen, uint32_t flags = 0);
     io_uring_sqe* prepareAsyncCancel(uint64_t userData);
-    // io_uring_sqe* prepareLinkTimeout();
+    io_uring_sqe* prepareLinkTimeout(__kernel_timespec* ts);
     io_uring_sqe* prepareConnect(int sockfd, const sockaddr* addr, socklen_t addrlen);
     // io_uring_sqe* prepareFallocate();
     io_uring_sqe* prepareOpenat(int dirfd, const char* pathname, int flags, mode_t mode);
@@ -93,8 +94,8 @@ public:
     io_uring_sqe* prepareWrite(int fd, const void* buf, size_t count, off_t offset = 0);
     // io_uring_sqe* prepareFadvise();
     // io_uring_sqe* prepareMadvise();
-    io_uring_sqe* prepareSend(int sockfd, const void* buf, size_t len, int flags);
-    io_uring_sqe* prepareRecv(int sockfd, void* buf, size_t len, int flags);
+    io_uring_sqe* prepareSend(int sockfd, const void* buf, size_t len, int flags = 0);
+    io_uring_sqe* prepareRecv(int sockfd, void* buf, size_t len, int flags = 0);
     io_uring_sqe* prepareOpenat2(int dirfd, const char* pathname, const open_how* how);
     io_uring_sqe* prepareEpollCtl(int epfd, int op, int fd, epoll_event* event);
     // io_uring_sqe* prepareSplice(int fd_in, loff_t* off_in, int fd_out, loff_t* off_out,
@@ -104,8 +105,8 @@ public:
     // io_uring_sqe* prepareTee(int fdIn, int fdOut, size_t len, unsigned int flags);
     io_uring_sqe* prepareShutdown(int fd, int how);
     io_uring_sqe* prepareRenameat(
-        int olddirfd, const char* oldpath, int newdirfd, const char* newpath, int flags);
-    io_uring_sqe* prepareUnlinkat(int dirfd, const char* pathname, int flags);
+        int olddirfd, const char* oldpath, int newdirfd, const char* newpath, int flags = 0);
+    io_uring_sqe* prepareUnlinkat(int dirfd, const char* pathname, int flags = 0);
 
 private:
     void cleanup();
