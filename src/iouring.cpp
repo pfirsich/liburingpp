@@ -124,18 +124,19 @@ bool IoURing::init(size_t sqEntries)
         return false;
     }
 
-    io_uring_params params;
-    ::memset(&params, 0, sizeof(params));
-    ringFd_ = io_uring_setup(sqEntries, &params);
+    ::memset(&params_, 0, sizeof(params_));
+    ringFd_ = io_uring_setup(sqEntries, &params_);
     if (ringFd_ == -1) {
         return false;
     }
-    sqEntries_ = params.sq_entries;
 
-    auto sqrSize_ = params.sq_off.array + params.sq_entries * sizeof(unsigned);
-    auto cqrSize_ = params.cq_off.cqes + params.cq_entries * sizeof(io_uring_cqe);
+    sqEntries_ = params_.sq_entries;
 
-    if (params.features & IORING_FEAT_SINGLE_MMAP) {
+    auto sqrSize_ = params_.sq_off.array + params_.sq_entries * sizeof(unsigned);
+    // cq_entries is usually 2 * sq_entries
+    auto cqrSize_ = params_.cq_off.cqes + params_.cq_entries * sizeof(io_uring_cqe);
+
+    if (params_.features & IORING_FEAT_SINGLE_MMAP) {
         sqrSize_ = std::max(sqrSize_, cqrSize_);
         cqrSize_ = sqrSize_;
     }
@@ -147,12 +148,12 @@ bool IoURing::init(size_t sqEntries)
         return false;
     }
 
-    sqHeadPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params.sq_off.head);
-    sqTailPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params.sq_off.tail);
-    sqRingMaskPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params.sq_off.ring_mask);
-    sqIndexArray_ = reinterpret_cast<unsigned*>(sqrPtr_ + params.sq_off.array);
+    sqHeadPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.head);
+    sqTailPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.tail);
+    sqRingMaskPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.ring_mask);
+    sqIndexArray_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.array);
 
-    if (params.features & IORING_FEAT_SINGLE_MMAP) {
+    if (params_.features & IORING_FEAT_SINGLE_MMAP) {
         cqrPtr_ = sqrPtr_;
     } else {
         cqrPtr_ = static_cast<uint8_t*>(::mmap(nullptr, cqrSize_, PROT_READ | PROT_WRITE,
@@ -163,12 +164,12 @@ bool IoURing::init(size_t sqEntries)
         }
     }
 
-    cqHeadPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params.cq_off.head);
-    cqTailPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params.cq_off.tail);
-    cqRingMaskPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params.cq_off.ring_mask);
-    cqes_ = reinterpret_cast<io_uring_cqe*>(cqrPtr_ + params.cq_off.cqes);
+    cqHeadPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params_.cq_off.head);
+    cqTailPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params_.cq_off.tail);
+    cqRingMaskPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params_.cq_off.ring_mask);
+    cqes_ = reinterpret_cast<io_uring_cqe*>(cqrPtr_ + params_.cq_off.cqes);
 
-    sqes_ = static_cast<io_uring_sqe*>(::mmap(nullptr, params.sq_entries * sizeof(io_uring_sqe),
+    sqes_ = static_cast<io_uring_sqe*>(::mmap(nullptr, params_.sq_entries * sizeof(io_uring_sqe),
         PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ringFd_, IORING_OFF_SQES));
     if (sqes_ == MAP_FAILED) {
         cleanup();
@@ -176,6 +177,16 @@ bool IoURing::init(size_t sqEntries)
     }
 
     return true;
+}
+
+bool IoURing::isInitialized() const
+{
+    return ringFd_ != -1;
+}
+
+const io_uring_params& IoURing::getParams() const
+{
+    return params_;
 }
 
 io_uring_cqe* IoURing::peekCqe(unsigned* numAvailable) const
@@ -241,6 +252,17 @@ void IoURing::advanceCq(size_t num) const
     writeBarrier();
 }
 
+size_t IoURing::getNumSqeEntries() const
+{
+    return sqEntries_;
+}
+
+size_t IoURing::getSqeCapacity() const
+{
+    readBarrier();
+    return sqEntries_ - (sqesTail_ - *sqHeadPtr_);
+}
+
 io_uring_sqe* IoURing::getSqe()
 {
     assert(ringFd_ != -1);
@@ -287,6 +309,9 @@ void IoURing::submitSqes(size_t num, size_t waitCqes)
 io_uring_sqe* IoURing::prepare(uint8_t opcode, int fd, uint64_t off, const void* addr, uint32_t len)
 {
     auto sqe = getSqe();
+    if (!sqe) {
+        return nullptr;
+    }
     sqe->opcode = opcode;
     sqe->flags = 0;
     sqe->ioprio = 0;
@@ -318,14 +343,18 @@ io_uring_sqe* IoURing::prepareWritev(int fd, const iovec* iov, int iovcnt, off_t
 io_uring_sqe* IoURing::prepareFsync(int fd, uint32_t flags)
 {
     auto sqe = prepare(IORING_OP_FSYNC, fd, 0, nullptr, 0);
-    sqe->fsync_flags = flags;
+    if (sqe) {
+        sqe->fsync_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::preparePollAdd(int fd, unsigned pollMask)
 {
     auto sqe = prepare(IORING_OP_POLL_ADD, fd, 0, nullptr, 0);
-    sqe->poll_events = pollMask;
+    if (sqe) {
+        sqe->poll_events = pollMask;
+    }
     return sqe;
 }
 
@@ -338,43 +367,55 @@ io_uring_sqe* IoURing::prepareSyncFileRange(
     int fd, off64_t offset, off64_t nbytes, unsigned int flags)
 {
     auto sqe = prepare(IORING_OP_SYNC_FILE_RANGE, fd, offset, nullptr, nbytes);
-    sqe->sync_range_flags = flags;
+    if (sqe) {
+        sqe->sync_range_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareSendmsg(int sockfd, const msghdr* msg, int flags)
 {
     auto sqe = prepare(IORING_OP_SENDMSG, sockfd, 0, msg, 1);
-    sqe->msg_flags = flags;
+    if (sqe) {
+        sqe->msg_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareRecvmsg(int sockfd, const msghdr* msg, int flags)
 {
     auto sqe = prepare(IORING_OP_RECVMSG, sockfd, 0, msg, 1);
-    sqe->msg_flags = flags;
+    if (sqe) {
+        sqe->msg_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareTimeout(struct __kernel_timespec* ts, uint64_t count, uint32_t flags)
 {
     auto sqe = prepare(IORING_OP_TIMEOUT, -1, count, ts, 1);
-    sqe->timeout_flags = flags;
+    if (sqe) {
+        sqe->timeout_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareTimeoutRemove(uint64_t userData, uint32_t flags)
 {
     auto sqe = prepare(IORING_OP_TIMEOUT_REMOVE, -1, 0, reinterpret_cast<void*>(userData), 0);
-    sqe->timeout_flags = flags;
+    if (sqe) {
+        sqe->timeout_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareAccept(int sockfd, sockaddr* addr, socklen_t* addrlen, uint32_t flags)
 {
     auto sqe = prepare(IORING_OP_ACCEPT, sockfd, 0, addr, 0);
-    sqe->addr2 = reinterpret_cast<uint64_t>(addrlen);
-    sqe->accept_flags = flags;
+    if (sqe) {
+        sqe->addr2 = reinterpret_cast<uint64_t>(addrlen);
+        sqe->accept_flags = flags;
+    }
     return sqe;
 }
 
@@ -385,8 +426,7 @@ io_uring_sqe* IoURing::prepareAsyncCancel(uint64_t userData)
 
 io_uring_sqe* IoURing::prepareLinkTimeout(struct __kernel_timespec* ts)
 {
-    auto sqe = prepare(IORING_OP_LINK_TIMEOUT, -1, 0, ts, 1);
-    return sqe;
+    return prepare(IORING_OP_LINK_TIMEOUT, -1, 0, ts, 1);
 }
 
 io_uring_sqe* IoURing::prepareConnect(int sockfd, const sockaddr* addr, socklen_t addrlen)
@@ -397,7 +437,9 @@ io_uring_sqe* IoURing::prepareConnect(int sockfd, const sockaddr* addr, socklen_
 io_uring_sqe* IoURing::prepareOpenat(int dirfd, const char* pathname, int flags, mode_t mode)
 {
     auto sqe = prepare(IORING_OP_OPENAT, dirfd, 0, pathname, mode);
-    sqe->open_flags = flags;
+    if (sqe) {
+        sqe->open_flags = flags;
+    }
     return sqe;
 }
 
@@ -411,7 +453,9 @@ io_uring_sqe* IoURing::prepareStatx(
 {
     auto sqe
         = prepare(IORING_OP_STATX, dirfd, reinterpret_cast<uint64_t>(statxbuf), pathname, mask);
-    sqe->statx_flags = flags;
+    if (sqe) {
+        sqe->statx_flags = flags;
+    }
     return sqe;
 }
 
@@ -428,14 +472,18 @@ io_uring_sqe* IoURing::prepareWrite(int fd, const void* buf, size_t count, off_t
 io_uring_sqe* IoURing::prepareSend(int sockfd, const void* buf, size_t len, int flags)
 {
     auto sqe = prepare(IORING_OP_SEND, sockfd, 0, buf, len);
-    sqe->msg_flags = flags;
+    if (sqe) {
+        sqe->msg_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareRecv(int sockfd, void* buf, size_t len, int flags)
 {
     auto sqe = prepare(IORING_OP_RECV, sockfd, 0, buf, len);
-    sqe->msg_flags = flags;
+    if (sqe) {
+        sqe->msg_flags = flags;
+    }
     return sqe;
 }
 
@@ -461,13 +509,17 @@ io_uring_sqe* IoURing::prepareRenameat(
 {
     auto sqe = prepare(
         IORING_OP_RENAMEAT, olddirfd, reinterpret_cast<uint64_t>(newpath), oldpath, newdirfd);
-    sqe->rename_flags = flags;
+    if (sqe) {
+        sqe->rename_flags = flags;
+    }
     return sqe;
 }
 
 io_uring_sqe* IoURing::prepareUnlinkat(int dirfd, const char* pathname, int flags)
 {
     auto sqe = prepare(IORING_OP_UNLINKAT, dirfd, 0, pathname, 0);
-    sqe->unlink_flags = flags;
+    if (sqe) {
+        sqe->unlink_flags = flags;
+    }
     return sqe;
 }

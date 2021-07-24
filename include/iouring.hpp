@@ -54,6 +54,9 @@ public:
     IoURing& operator=(IoURing&&) = delete;
 
     bool init(size_t sqEntries = 128);
+    bool isInitialized() const;
+
+    const io_uring_params& getParams() const;
 
     io_uring_cqe* peekCqe(unsigned* numAvailable = nullptr) const;
     std::optional<CQEHandle> peekCqeHandle(unsigned* numAvailable = nullptr) const;
@@ -61,6 +64,8 @@ public:
     std::optional<CQEHandle> waitCqeHandle(size_t num = 1) const;
     void advanceCq(size_t num = 1) const;
 
+    size_t getNumSqeEntries() const;
+    size_t getSqeCapacity() const;
     io_uring_sqe* getSqe();
     size_t flushSqes(size_t num = 0);
     void submitSqes(size_t num = 0, size_t waitCqes = 0);
@@ -111,6 +116,8 @@ public:
 private:
     void cleanup();
     void release();
+
+    io_uring_params params_;
 
     int ringFd_ = -1;
 
