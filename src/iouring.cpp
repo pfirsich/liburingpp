@@ -120,7 +120,10 @@ bool IoURing::init(size_t sqEntries)
     assert(ringFd_ == -1);
 
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_setup.2.en.html
-    assert(isPowerOfTwo(sqEntries));
+    if (!isPowerOfTwo(sqEntries) || sqEntries < 1 || sqEntries > 4096) {
+        return false;
+    }
+
     io_uring_params params;
     ::memset(&params, 0, sizeof(params));
     ringFd_ = io_uring_setup(sqEntries, &params);
