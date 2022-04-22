@@ -349,11 +349,11 @@ io_uring_sqe* IoURing::prepareFsync(int fd, uint32_t flags)
     return sqe;
 }
 
-io_uring_sqe* IoURing::preparePollAdd(int fd, unsigned pollMask)
+io_uring_sqe* IoURing::preparePollAdd(int fd, short events, uint32_t flags)
 {
-    auto sqe = prepare(IORING_OP_POLL_ADD, fd, 0, nullptr, 0);
+    auto sqe = prepare(IORING_OP_POLL_ADD, fd, 0, nullptr, flags);
     if (sqe) {
-        sqe->poll_events = pollMask;
+        sqe->poll_events = static_cast<unsigned short>(events);
     }
     return sqe;
 }

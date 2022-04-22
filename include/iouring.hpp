@@ -77,7 +77,7 @@ public:
     io_uring_sqe* prepareFsync(int fd, uint32_t flags = 0);
     // io_uring_sqe* prepareReadFixed();
     // io_uring_sqe* prepareWriteFixed();
-    io_uring_sqe* preparePollAdd(int fd, unsigned pollMask);
+    io_uring_sqe* preparePollAdd(int fd, short events, uint32_t flags = 0);
     io_uring_sqe* preparePollRemove(uint64_t userData);
     io_uring_sqe* prepareSyncFileRange(
         int fd, off64_t offset, off64_t nbytes, unsigned int flags = 0);
