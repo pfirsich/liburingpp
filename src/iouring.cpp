@@ -226,13 +226,13 @@ io_uring_cqe* IoURing::waitCqe(size_t num) const
     if (num <= numAvailable) {
         return cqe;
     }
-    const auto res = io_uring_enter(ringFd_, 0, num, IORING_ENTER_GETEVENTS);
-    if (res < 0) {
-        return nullptr;
+    if (num > 0) {
+        const auto res = io_uring_enter(ringFd_, 0, num, IORING_ENTER_GETEVENTS);
+        if (res < 0) {
+            return nullptr;
+        }
     }
-    cqe = peekCqe();
-    assert(cqe);
-    return cqe;
+    return peekCqe();
 }
 
 std::optional<IoURing::CQEHandle> IoURing::waitCqeHandle(size_t num) const
