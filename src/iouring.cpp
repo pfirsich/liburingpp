@@ -279,6 +279,7 @@ io_uring_sqe* IoURing::getSqe()
 size_t IoURing::flushSqes(size_t num)
 {
     assert(ringFd_ != -1);
+    assert(sqesTail_ >= sqesHead_);
     const auto sqesGotten = sqesTail_ - sqesHead_;
     assert(num <= sqesGotten);
     const auto toFlush = num == 0 ? sqesGotten : std::min(num, sqesGotten);
@@ -297,13 +298,22 @@ size_t IoURing::flushSqes(size_t num)
     *sqTailPtr_ = tail;
     writeBarrier();
 
+    toSubmit_ += toFlush;
+
     return toFlush;
 }
 
-void IoURing::submitSqes(size_t num, size_t waitCqes)
+int IoURing::submitSqes(size_t waitCqes)
 {
     assert(ringFd_ != -1);
-    io_uring_enter(ringFd_, flushSqes(num), waitCqes, waitCqes > 0 ? IORING_ENTER_GETEVENTS : 0);
+    flushSqes();
+    const auto ret
+        = io_uring_enter(ringFd_, toSubmit_, waitCqes, waitCqes > 0 ? IORING_ENTER_GETEVENTS : 0);
+    if (ret > 0) {
+        assert(static_cast<size_t>(ret) <= toSubmit_);
+        toSubmit_ -= static_cast<size_t>(ret);
+    }
+    return ret;
 }
 
 io_uring_sqe* IoURing::prepare(uint8_t opcode, int fd, uint64_t off, const void* addr, uint32_t len)

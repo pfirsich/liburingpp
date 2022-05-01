@@ -70,7 +70,7 @@ public:
     size_t getSqeCapacity() const;
     io_uring_sqe* getSqe();
     size_t flushSqes(size_t num = 0);
-    void submitSqes(size_t num = 0, size_t waitCqes = 0);
+    int submitSqes(size_t waitCqes = 0);
 
     io_uring_sqe* prepare(uint8_t opcode, int fd, uint64_t off, const void* addr, uint32_t len);
     io_uring_sqe* prepareNop();
@@ -141,11 +141,13 @@ private:
 
     io_uring_sqe* sqes_ = nullptr;
 
-    // These two variables are the only member variables that change over the lifetime
+    // The following variables are the only member variables that change over the lifetime
     // of this object.
     // All others above are only set once by init().
+
     // These two are the head/tail of the sqes_ array (containing actual io_uring_sqe),
     // while sqHeadPtr_ and sqTailPtr_ are the head/tail of the sqIndexArray_ (with unsigneds).
     size_t sqesHead_ = 0;
     size_t sqesTail_ = 0;
+    size_t toSubmit_ = 0;
 };
