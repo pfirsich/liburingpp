@@ -391,7 +391,7 @@ io_uring_sqe* IoURing::prepareRecvmsg(int sockfd, const msghdr* msg, int flags)
     return sqe;
 }
 
-io_uring_sqe* IoURing::prepareTimeout(struct __kernel_timespec* ts, uint64_t count, uint32_t flags)
+io_uring_sqe* IoURing::prepareTimeout(Timespec* ts, uint64_t count, uint32_t flags)
 {
     auto sqe = prepare(IORING_OP_TIMEOUT, -1, count, ts, 1);
     if (sqe) {
@@ -424,9 +424,13 @@ io_uring_sqe* IoURing::prepareAsyncCancel(uint64_t userData)
     return prepare(IORING_OP_ASYNC_CANCEL, -1, 0, reinterpret_cast<void*>(userData), 0);
 }
 
-io_uring_sqe* IoURing::prepareLinkTimeout(struct __kernel_timespec* ts)
+io_uring_sqe* IoURing::prepareLinkTimeout(Timespec* ts, uint32_t flags)
 {
-    return prepare(IORING_OP_LINK_TIMEOUT, -1, 0, ts, 1);
+    auto sqe = prepare(IORING_OP_LINK_TIMEOUT, -1, 0, ts, 1);
+    if (sqe) {
+        sqe->timeout_flags = flags;
+    }
+    return sqe;
 }
 
 io_uring_sqe* IoURing::prepareConnect(int sockfd, const sockaddr* addr, socklen_t addrlen)

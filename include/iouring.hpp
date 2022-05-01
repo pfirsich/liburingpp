@@ -22,6 +22,8 @@
 // Similar problems arise with submissions, though those could be resolved more easily.
 class IoURing {
 public:
+    using Timespec = __kernel_timespec;
+
     struct CQEHandle {
         const IoURing* ring = nullptr;
         uint64_t userData;
@@ -83,11 +85,11 @@ public:
         int fd, off64_t offset, off64_t nbytes, unsigned int flags = 0);
     io_uring_sqe* prepareSendmsg(int sockfd, const msghdr* msg, int flags = 0);
     io_uring_sqe* prepareRecvmsg(int sockfd, const msghdr* msg, int flags = 0);
-    io_uring_sqe* prepareTimeout(__kernel_timespec* ts, uint64_t count, uint32_t flags = 0);
+    io_uring_sqe* prepareTimeout(Timespec* ts, uint64_t count, uint32_t flags = 0);
     io_uring_sqe* prepareTimeoutRemove(uint64_t userData, uint32_t flags);
     io_uring_sqe* prepareAccept(int sockfd, sockaddr* addr, socklen_t* addrlen, uint32_t flags = 0);
     io_uring_sqe* prepareAsyncCancel(uint64_t userData);
-    io_uring_sqe* prepareLinkTimeout(__kernel_timespec* ts);
+    io_uring_sqe* prepareLinkTimeout(Timespec* ts, uint32_t flags = 0);
     io_uring_sqe* prepareConnect(int sockfd, const sockaddr* addr, socklen_t addrlen);
     // io_uring_sqe* prepareFallocate();
     io_uring_sqe* prepareOpenat(int dirfd, const char* pathname, int flags, mode_t mode);
