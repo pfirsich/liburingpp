@@ -321,7 +321,7 @@ io_uring_sqe* IoURing::prepare(uint8_t opcode, int fd, uint64_t off, const void*
     sqe->len = len;
     sqe->rw_flags = 0; // Init some union field with 0
     sqe->user_data = 0;
-    sqe->__pad2[0] = sqe->__pad2[1] = sqe->__pad2[2] = 0;
+    sqe->__pad2[0] = sqe->__pad2[1] = 0;
     return sqe;
 }
 
