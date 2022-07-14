@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 
 #include <sys/mman.h>
@@ -13,7 +15,7 @@
 // [1]: https://kernel.dk/io_uring.pdf
 
 namespace {
-int io_uring_setup(unsigned entries, io_uring_params* p)
+int io_uring_setup(uint32_t entries, io_uring_params* p)
 {
     return (int)syscall(__NR_io_uring_setup, entries, p);
 }
@@ -39,6 +41,12 @@ void writeBarrier()
 {
     // [1]: Order this write after previous writes.
     std::atomic_thread_fence(std::memory_order_release);
+}
+
+void barrier()
+{
+    // No read or write operation crosses the barrier
+    std::atomic_thread_fence(std::memory_order_acq_rel);
 }
 }
 
@@ -87,14 +95,14 @@ IoURing::CQEHandle::~CQEHandle()
 
 void IoURing::cleanup()
 {
-    if (sqrPtr_) {
-        ::munmap(sqrPtr_, sqrSize_);
+    if (sq_.ptr) {
+        ::munmap(sq_.ptr, sq_.size);
     }
-    if (cqrPtr_ && sqrPtr_ != cqrPtr_) {
-        ::munmap(cqrPtr_, cqrSize_);
+    if (cq_.ptr && sq_.ptr != cq_.ptr) {
+        ::munmap(cq_.ptr, cq_.size);
     }
-    if (sqes_) {
-        ::munmap(sqes_, sqEntries_ * sizeof(io_uring_sqe));
+    if (sq_.entries) {
+        ::munmap(sq_.entries, params_.sq_entries * sizeof(io_uring_sqe));
     }
     if (ringFd_ != -1) {
         ::close(ringFd_);
@@ -104,9 +112,9 @@ void IoURing::cleanup()
 
 void IoURing::release()
 {
-    sqrPtr_ = nullptr;
-    cqrPtr_ = nullptr;
-    sqes_ = nullptr;
+    sq_.ptr = nullptr;
+    cq_.ptr = nullptr;
+    sq_.entries = nullptr;
     ringFd_ = -1;
 }
 
@@ -115,7 +123,7 @@ IoURing::~IoURing()
     cleanup();
 }
 
-bool IoURing::init(size_t sqEntries)
+bool IoURing::init(size_t sqEntries, bool sqPoll)
 {
     assert(ringFd_ == -1);
 
@@ -125,56 +133,71 @@ bool IoURing::init(size_t sqEntries)
     }
 
     ::memset(&params_, 0, sizeof(params_));
+    if (sqPoll) {
+        params_.flags = IORING_SETUP_SQPOLL;
+    }
     ringFd_ = io_uring_setup(sqEntries, &params_);
     if (ringFd_ == -1) {
+        std::perror("io_uring_setup");
+        return false;
+    }
+    if (sqPoll && !(params_.features & IORING_FEAT_SQPOLL_NONFIXED)) {
+        std::fputs("IORING_FEAT_SQPOLL_NONFIXED is not supported", stderr);
         return false;
     }
 
-    sqEntries_ = params_.sq_entries;
-
-    auto sqrSize_ = params_.sq_off.array + params_.sq_entries * sizeof(unsigned);
+    sq_.size = params_.sq_off.array + params_.sq_entries * sizeof(uint32_t);
     // cq_entries is usually 2 * sq_entries
-    auto cqrSize_ = params_.cq_off.cqes + params_.cq_entries * sizeof(io_uring_cqe);
+    cq_.size = params_.cq_off.cqes + params_.cq_entries * sizeof(io_uring_cqe);
 
+    // This is how everyone does it, but I don't understand, why we don't have to mmap with len =
+    // sq_.size + cq_.size.
     if (params_.features & IORING_FEAT_SINGLE_MMAP) {
-        sqrSize_ = std::max(sqrSize_, cqrSize_);
-        cqrSize_ = sqrSize_;
+        sq_.size = std::max(sq_.size, cq_.size);
+        cq_.size = sq_.size;
     }
 
-    sqrPtr_ = static_cast<uint8_t*>(::mmap(nullptr, sqrSize_, PROT_READ | PROT_WRITE,
-        MAP_SHARED | MAP_POPULATE, ringFd_, IORING_OFF_SQ_RING));
-    if (sqrPtr_ == MAP_FAILED) {
+    sq_.ptr = ::mmap(nullptr, sq_.size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ringFd_,
+        IORING_OFF_SQ_RING);
+    if (sq_.ptr == MAP_FAILED) {
+        std::perror("mmap");
         cleanup();
         return false;
     }
 
-    sqHeadPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.head);
-    sqTailPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.tail);
-    sqRingMaskPtr_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.ring_mask);
-    sqIndexArray_ = reinterpret_cast<unsigned*>(sqrPtr_ + params_.sq_off.array);
-
     if (params_.features & IORING_FEAT_SINGLE_MMAP) {
-        cqrPtr_ = sqrPtr_;
+        cq_.ptr = sq_.ptr;
     } else {
-        cqrPtr_ = static_cast<uint8_t*>(::mmap(nullptr, cqrSize_, PROT_READ | PROT_WRITE,
-            MAP_SHARED | MAP_POPULATE, ringFd_, IORING_OFF_CQ_RING));
-        if (cqrPtr_ == MAP_FAILED) {
+        cq_.ptr = ::mmap(nullptr, cq_.size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
+            ringFd_, IORING_OFF_CQ_RING);
+        if (cq_.ptr == MAP_FAILED) {
+            std::perror("mmap");
             cleanup();
             return false;
         }
     }
 
-    cqHeadPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params_.cq_off.head);
-    cqTailPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params_.cq_off.tail);
-    cqRingMaskPtr_ = reinterpret_cast<unsigned*>(cqrPtr_ + params_.cq_off.ring_mask);
-    cqes_ = reinterpret_cast<io_uring_cqe*>(cqrPtr_ + params_.cq_off.cqes);
+    auto sqPtr = static_cast<uint8_t*>(sq_.ptr);
+    sq_.flags = reinterpret_cast<uint32_t*>(sqPtr + params_.sq_off.flags);
+    sq_.head = reinterpret_cast<uint32_t*>(sqPtr + params_.sq_off.head);
+    sq_.tail = reinterpret_cast<uint32_t*>(sqPtr + params_.sq_off.tail);
+    sq_.ringMask = reinterpret_cast<uint32_t*>(sqPtr + params_.sq_off.ring_mask);
+    sq_.indexArray = reinterpret_cast<uint32_t*>(sqPtr + params_.sq_off.array);
 
-    sqes_ = static_cast<io_uring_sqe*>(::mmap(nullptr, params_.sq_entries * sizeof(io_uring_sqe),
-        PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ringFd_, IORING_OFF_SQES));
-    if (sqes_ == MAP_FAILED) {
+    sq_.entries
+        = static_cast<io_uring_sqe*>(::mmap(nullptr, params_.sq_entries * sizeof(io_uring_sqe),
+            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ringFd_, IORING_OFF_SQES));
+    if (sq_.entries == MAP_FAILED) {
+        std::perror("mmap");
         cleanup();
         return false;
     }
+
+    auto cqPtr = static_cast<uint8_t*>(cq_.ptr);
+    cq_.head = reinterpret_cast<uint32_t*>(cqPtr + params_.cq_off.head);
+    cq_.tail = reinterpret_cast<uint32_t*>(cqPtr + params_.cq_off.tail);
+    cq_.ringMask = reinterpret_cast<uint32_t*>(cqPtr + params_.cq_off.ring_mask);
+    cq_.entries = reinterpret_cast<io_uring_cqe*>(cqPtr + params_.cq_off.cqes);
 
     return true;
 }
@@ -189,26 +212,26 @@ const io_uring_params& IoURing::getParams() const
     return params_;
 }
 
-io_uring_cqe* IoURing::peekCqe(unsigned* numAvailable) const
+io_uring_cqe* IoURing::peekCqe(uint32_t* numAvailable) const
 {
     assert(ringFd_ != -1);
-    const auto head = *cqHeadPtr_;
+    const auto head = *cq_.head;
     readBarrier();
-    const auto tail = *cqTailPtr_;
+    const auto tail = *cq_.tail;
     assert(tail >= head);
     const auto available = tail - head;
     if (numAvailable) {
         *numAvailable = available;
     }
     if (available > 0) {
-        const auto idx = head & *cqRingMaskPtr_;
-        const auto cqe = cqes_ + idx;
+        const auto idx = head & *cq_.ringMask;
+        const auto cqe = cq_.entries + idx;
         return cqe;
     }
     return nullptr;
 }
 
-std::optional<IoURing::CQEHandle> IoURing::peekCqeHandle(unsigned* numAvailable) const
+std::optional<IoURing::CQEHandle> IoURing::peekCqeHandle(uint32_t* numAvailable) const
 {
     auto cqe = peekCqe(numAvailable);
     if (!cqe) {
@@ -221,7 +244,7 @@ io_uring_cqe* IoURing::waitCqe(size_t num) const
 {
     assert(ringFd_ != -1);
     assert(num > 0);
-    unsigned numAvailable = 0;
+    uint32_t numAvailable = 0;
     auto cqe = peekCqe(&numAvailable);
     if (num <= numAvailable) {
         return cqe;
@@ -248,30 +271,30 @@ void IoURing::advanceCq(size_t num) const
 {
     assert(ringFd_ != -1);
     // Is this fence enough? (I am reading head again)
-    *cqHeadPtr_ = *cqHeadPtr_ + num;
+    *cq_.head = *cq_.head + num;
     writeBarrier();
 }
 
 size_t IoURing::getNumSqeEntries() const
 {
-    return sqEntries_;
+    return params_.sq_entries;
 }
 
 size_t IoURing::getSqeCapacity() const
 {
     readBarrier();
-    return sqEntries_ - (sqesTail_ - *sqHeadPtr_);
+    return params_.sq_entries - (sq_.eTail - *sq_.head);
 }
 
 io_uring_sqe* IoURing::getSqe()
 {
     assert(ringFd_ != -1);
     readBarrier();
-    const auto head = *sqHeadPtr_;
-    if (sqesTail_ - head < sqEntries_) {
-        const auto idx = sqesTail_ & (*sqRingMaskPtr_);
-        sqesTail_++;
-        return sqes_ + idx;
+    const auto head = *sq_.head;
+    if (sq_.eTail - head < params_.sq_entries) {
+        const auto idx = sq_.eTail & (*sq_.ringMask);
+        sq_.eTail++;
+        return sq_.entries + idx;
     }
     return nullptr;
 }
@@ -279,26 +302,26 @@ io_uring_sqe* IoURing::getSqe()
 size_t IoURing::flushSqes(size_t num)
 {
     assert(ringFd_ != -1);
-    assert(sqesTail_ >= sqesHead_);
-    const auto sqesGotten = sqesTail_ - sqesHead_;
+    assert(sq_.eTail >= sq_.eHead);
+    const auto sqesGotten = sq_.eTail - sq_.eHead;
     assert(num <= sqesGotten);
     const auto toFlush = num == 0 ? sqesGotten : std::min(num, sqesGotten);
     if (toFlush == 0) {
         return 0;
     }
 
-    const auto mask = *sqRingMaskPtr_;
-    auto tail = *sqTailPtr_;
+    const auto mask = *sq_.ringMask;
+    auto tail = *sq_.tail;
     for (size_t i = 0; i < toFlush; ++i) {
-        sqIndexArray_[tail & mask] = sqesHead_ & mask;
+        sq_.indexArray[tail & mask] = sq_.eHead & mask;
         tail++;
-        sqesHead_++;
+        sq_.eHead++;
     }
     writeBarrier();
-    *sqTailPtr_ = tail;
+    *sq_.tail = tail;
     writeBarrier();
 
-    toSubmit_ += toFlush;
+    sq_.toSubmit += toFlush;
 
     return toFlush;
 }
@@ -307,13 +330,24 @@ int IoURing::submitSqes(size_t waitCqes)
 {
     assert(ringFd_ != -1);
     flushSqes();
-    const auto ret
-        = io_uring_enter(ringFd_, toSubmit_, waitCqes, waitCqes > 0 ? IORING_ENTER_GETEVENTS : 0);
-    if (ret > 0) {
-        assert(static_cast<size_t>(ret) <= toSubmit_);
-        toSubmit_ -= static_cast<size_t>(ret);
+    if (params_.flags & IORING_SETUP_SQPOLL) {
+        barrier();
+        const auto needWakeup = *sq_.flags & IORING_SQ_NEED_WAKEUP;
+        const uint32_t flags = (needWakeup ? IORING_ENTER_SQ_WAKEUP : 0)
+            | (waitCqes > 0 ? IORING_ENTER_GETEVENTS : 0);
+        if (flags > 0) {
+            return io_uring_enter(ringFd_, 0, waitCqes, flags);
+        }
+        return 0;
+    } else {
+        const auto ret = io_uring_enter(
+            ringFd_, sq_.toSubmit, waitCqes, waitCqes > 0 ? IORING_ENTER_GETEVENTS : 0);
+        if (ret > 0) {
+            assert(static_cast<size_t>(ret) <= sq_.toSubmit);
+            sq_.toSubmit -= static_cast<size_t>(ret);
+        }
+        return ret;
     }
-    return ret;
 }
 
 io_uring_sqe* IoURing::prepare(uint8_t opcode, int fd, uint64_t off, const void* addr, uint32_t len)

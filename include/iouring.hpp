@@ -55,7 +55,7 @@ public:
     IoURing(IoURing&&) = delete;
     IoURing& operator=(IoURing&&) = delete;
 
-    bool init(size_t sqEntries = 128);
+    bool init(size_t sqEntries = 128, bool sqPoll = false);
     bool isInitialized() const;
 
     const io_uring_params& getParams() const;
@@ -116,6 +116,38 @@ public:
     io_uring_sqe* prepareUnlinkat(int dirfd, const char* pathname, int flags = 0);
 
 private:
+    // For all of these elements are produced at the tail and consumed at the head.
+
+    struct IoSq {
+        void* ptr = nullptr;
+        size_t size = 0;
+
+        uint32_t* flags = nullptr;
+
+        uint32_t* head = nullptr;
+        uint32_t* tail = nullptr;
+        uint32_t* ringMask = nullptr;
+        uint32_t* indexArray = nullptr;
+
+        io_uring_sqe* entries = nullptr;
+        // The following three variables are the only ones that change after init() has finished.
+        size_t eHead = 0;
+        size_t eTail = 0;
+        // toSubmit keeps track of the elements that were flushed (to the index array) and that we
+        // have to submit with io_uring_enter.
+        size_t toSubmit = 0;
+    };
+
+    struct IoCq {
+        void* ptr = nullptr;
+        size_t size = 0;
+
+        uint32_t* head = nullptr;
+        uint32_t* tail = nullptr;
+        uint32_t* ringMask = nullptr;
+        io_uring_cqe* entries = nullptr;
+    };
+
     void cleanup();
     void release();
 
@@ -123,31 +155,6 @@ private:
 
     int ringFd_ = -1;
 
-    size_t sqEntries_ = 0;
-
-    uint8_t* sqrPtr_ = nullptr;
-    size_t sqrSize_ = 0;
-    unsigned* sqHeadPtr_ = nullptr;
-    unsigned* sqTailPtr_ = nullptr;
-    unsigned* sqRingMaskPtr_ = nullptr;
-    unsigned* sqIndexArray_ = nullptr;
-
-    uint8_t* cqrPtr_ = nullptr;
-    size_t cqrSize_ = 0;
-    unsigned* cqHeadPtr_ = nullptr;
-    unsigned* cqTailPtr_ = nullptr;
-    unsigned* cqRingMaskPtr_ = nullptr;
-    io_uring_cqe* cqes_ = nullptr;
-
-    io_uring_sqe* sqes_ = nullptr;
-
-    // The following variables are the only member variables that change over the lifetime
-    // of this object.
-    // All others above are only set once by init().
-
-    // These two are the head/tail of the sqes_ array (containing actual io_uring_sqe),
-    // while sqHeadPtr_ and sqTailPtr_ are the head/tail of the sqIndexArray_ (with unsigneds).
-    size_t sqesHead_ = 0;
-    size_t sqesTail_ = 0;
-    size_t toSubmit_ = 0;
+    IoSq sq_;
+    IoCq cq_;
 };
